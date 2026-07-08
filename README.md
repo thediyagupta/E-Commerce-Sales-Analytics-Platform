@@ -26,10 +26,11 @@ An end-to-end business intelligence platform built using **PostgreSQL, FastAPI, 
 
 ![Swagger Customer](assets/swagger2.png)
 
-### Delivery Analytics
-
 ![Swagger Delivery](assets/swagger3.png)
 
+### Delivery Analytics
+
+![Swagger Delivery](assets/swagger5.png)
 ---
 
 # Features
