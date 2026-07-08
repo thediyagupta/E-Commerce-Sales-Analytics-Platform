@@ -20,15 +20,15 @@ An end-to-end business intelligence platform built using **PostgreSQL, FastAPI, 
 
 ### Revenue & Cohort Analytics
 
-![Swagger Revenue](assets/swagger_1.png)
+![Swagger Revenue](assets/swagger1.png)
 
 ### Customer & Seller Analytics
 
-![Swagger Customer](assets/swagger_2.png)
+![Swagger Customer](assets/swagger2.png)
 
 ### Delivery Analytics
 
-![Swagger Delivery](assets/swagger_3.png)
+![Swagger Delivery](assets/swagger3.png)
 
 ---
 
