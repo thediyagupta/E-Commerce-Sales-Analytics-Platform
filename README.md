@@ -1,221 +1,113 @@
-# Olist E-Commerce Sales Analytics Platform
-
-SQL-heavy analytics over the [Olist Brazilian E-Commerce dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
-(~100k orders, 9 relational tables), exposed as a FastAPI REST service with
-Redis-cached aggregations.
-
-## Stack
-- **PostgreSQL** — normalized schema, window functions, CTEs
-- **FastAPI** — REST layer over raw SQL (deliberately not an ORM — see below)
-- **Redis** — caches expensive aggregation queries
-- **Python / pandas** — data loading
-
-## Architecture
-
-```
-CSV files → load_data.py → PostgreSQL (9 tables, indexed)
-                                  │
-                        sql/*.sql (window fns, CTEs)
-                                  │
-                    FastAPI routers (app/routers/*.py)
-                                  │
-                    Redis cache (app/cache.py, decorator)
-                                  │
-                          REST API (/docs for Swagger UI)
-                                  │
-                     frontend/index.html (Chart.js dashboard)
-```
-
-## Setup
-
-```bash
-# 1. Start Postgres + Redis
-docker-compose up -d
-
-# 2. Install Python deps
-pip install -r requirements.txt
-
-# 3. Download the 9 CSVs from Kaggle into ./data/
-#    https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
-
-# 4. Load data (schema.sql auto-applies via docker-compose init script)
-python load_data.py
-
-# 5. Copy env file and adjust if needed
-cp .env.example .env
-
-# 6. Run the API
-uvicorn app.main:app --reload
-
-# 7. Open API docs
-# http://localhost:8000/docs
-
-# 8. Open the dashboard (just a static file, open directly in browser)
-# frontend/index.html
-```
-
-## Key design decisions (and why)
-
-**`customer_id` vs `customer_unique_id`.** Olist assigns a new `customer_id`
-to every order — the same real person gets a different ID each time they buy.
-Cohort retention and RFM analysis both group by `customer_unique_id` instead;
-using `customer_id` would make every customer look like a one-time buyer and
-silently produce a meaningless retention curve. This was the single most
-important bug I had to catch before trusting any of the numbers.
-
-**Raw SQL instead of an ORM.** The point of this project is to demonstrate
-SQL (window functions, CTEs, NTILE). An ORM would abstract exactly the part
-I'm trying to show. SQLAlchemy Core is used only for connection pooling and
-parameterized queries (`text()` with bound params — no string-formatted SQL,
-so no SQL injection surface).
-
-**What gets cached vs what doesn't.** `/revenue/trends`, `/cohort/retention`,
-`/delivery/delay-vs-review`, and `/sellers/top-by-region` are cached wholesale
-via a decorator, since they're full-table aggregations with no per-request
-variation that matters much. `/customers/rfm-segments` is different: it's
-paginated and filterable, and re-running the `NTILE()` window function (which
-must scan the *entire* customer base to assign quartiles) on every page
-request would be wasteful. Instead the full scored table is computed once,
-cached, and pagination/filtering happens in Python on the cached list.
-
-**Cache invalidation.** There's no automatic invalidation — this is a
-read-heavy analytics workload over a dataset that doesn't change at runtime.
-`app/cache.py` exposes `invalidate_prefix()` as a manual escape hatch for if
-you reload data and need to bust stale results.
-
-**Known data quality issues** (found via `load_data.py`'s sanity checks, not
-guessed): a small number of `order_items` reference `product_id`s absent from
-the products table, and Olist's `order_reviews` table has a handful of
-`review_id` values that repeat across different `order_id`s (hence the
-composite primary key). Both are documented rather than silently dropped.
-
-**Dataset limitation worth naming out loud:** ~97% of Olist customers order
-exactly once, so cohort retention past month 0 is genuinely low (not a query
-bug), and RFM frequency scores are weak signal since most customers tie at
-frequency=1. I call this out explicitly rather than presenting misleadingly
-smooth-looking segments.
-
-## API Endpoints
-
-| Endpoint | Description | Key SQL concept |
-|---|---|---|
-| `GET /api/v1/revenue/trends` | Monthly revenue, MoM growth, 3-mo rolling avg | `LAG`, window frame |
-| `GET /api/v1/cohort/retention` | Retention % by cohort month × months-since-first-order | Self-join via CTE, `DATE_TRUNC` |
-| `GET /api/v1/customers/rfm-segments` | Paginated RFM segments (`?page=&page_size=&segment=`) | `NTILE(4)`, multi-CTE |
-| `GET /api/v1/delivery/delay-vs-review` | Review score by delivery-delay bucket + correlation | `CASE` buckets, `CORR()` |
-| `GET /api/v1/sellers/top-by-region` | Top-N sellers per state (`?top_n=`) | `RANK()` partitioned |
-| `GET /api/v1/products/top-categories-by-region` | Top-N categories per state | `DENSE_RANK()` partitioned |
-| `GET /health` | Postgres + Redis connectivity check | — |
-
-Every list response includes `_cache_hit: true/false` so you can see caching
-working in real time.
-
-## What I'd do with more time
-
-- Materialized views for the cohort/RFM base tables instead of recomputing on cache miss
-- Alembic migrations instead of a single schema.sql
-- Auth + rate limiting if this were ever public
-- Move the frontend from static Chart.js to a proper React app if the dashboard grew
-
-## Repo structure
-
-```
-├── docker-compose.yml       # Postgres + Redis
-├── schema.sql                # DDL with indexing rationale in comments
-├── load_data.py               # CSV → Postgres loader with sanity checks
-├── sql/                        # Standalone .sql files — the actual analysis
-│   ├── 01_revenue_trends.sql
-│   ├── 02_cohort_retention.sql
-│   ├── 03_rfm_segmentation.sql
-│   ├── 04_delivery_delay_review.sql
-│   └── 05_top_sellers_products.sql
-├── app/
-│   ├── main.py                 # FastAPI app, health check, error handling
-│   ├── config.py                # Settings via pydantic-settings
-│   ├── database.py               # Connection pooling, raw SQL runner
-│   ├── cache.py                    # Redis caching decorator
-│   └── routers/                     # One router per analysis, mirrors sql/
-└── frontend/index.html                # Chart.js dashboard, no build step
-```
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green?logo=fastapi)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql)
 ![Redis](https://img.shields.io/badge/Redis-7-red?logo=redis)
 ![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker)
 
-
-
 # E-Commerce Sales Analytics Platform
 
-An end-to-end analytics platform built using **PostgreSQL, FastAPI, Redis, Docker, and Python** to process and analyze the Olist Brazilian E-Commerce dataset. The platform exposes REST APIs and an interactive dashboard for business intelligence, including revenue trends, customer segmentation, cohort retention, seller performance, and delivery analytics.
+An end-to-end business intelligence platform built using **PostgreSQL, FastAPI, Redis, Docker, and Python** to process and analyze the **Olist Brazilian E-Commerce Dataset**. The platform ingests raw CSV data through an automated ETL pipeline, performs advanced SQL analytics, exposes REST APIs, and visualizes business insights through an interactive dashboard.
+
+---
 
 ## Dashboard
 
 ![Dashboard](assets/dashboard.png)
 
+---
+
 ## API Documentation
 
-### Revenue & Cohort APIs
+### Revenue & Cohort Analytics
 
-![Swagger 1](assets/swagger_1.png)
+![Swagger Revenue](assets/swagger_1.png)
 
-### Customer & Seller APIs
+### Customer & Seller Analytics
 
-![Swagger 2](assets/swagger_2.png)
+![Swagger Customer](assets/swagger_2.png)
 
-### Delivery APIs
+### Delivery Analytics
 
-![Swagger 3](assets/swagger_3.png)
+![Swagger Delivery](assets/swagger_3.png)
 
-## Features
+---
 
-- Automated ETL pipeline for ingesting 1.18M+ records from the Olist dataset
-- Normalized PostgreSQL database with 9 relational tables
-- Advanced SQL analytics using CTEs, window functions, aggregations, and cohort analysis
-- Customer RFM segmentation with window functions (NTILE)
-- FastAPI backend exposing 6+ REST APIs
+# Features
+
+- Automated ETL pipeline for loading **1.18M+ records** from the Olist dataset into PostgreSQL
+- Normalized PostgreSQL schema comprising **9 relational tables**
+- Advanced analytical SQL using **CTEs, JOINs, aggregations, CASE statements, DATE_TRUNC, window functions, and ranking functions**
+- Customer **RFM segmentation**
+- Customer **cohort retention analysis**
+- Revenue trend analysis with rolling averages and month-over-month growth
+- Seller performance and regional product analytics
+- Delivery delay vs customer review analysis
+- FastAPI backend exposing **6+ REST APIs**
 - Redis-backed caching for expensive analytical queries
-- Interactive Chart.js dashboard consuming live API endpoints
-- Dockerized deployment with PostgreSQL and Redis
+- Interactive Chart.js dashboard
+- Dockerized development environment
 
-## Tech Stack
+---
+
+# Performance Benchmark
+
+Redis caching was benchmarked using repeated requests to analytical endpoints.
+
+| Benchmark | Result |
+|-----------|--------:|
+| Cached API Response | **13.2 ms** |
+| Uncached API Response | **210.1 ms** |
+| Latency Reduction | **93.7% (~16× faster)** |
+
+---
+
+# System Architecture
+
+```
+                    Olist CSV Dataset
+                           │
+                           ▼
+                  Python ETL Pipeline
+                    (Pandas Loader)
+                           │
+                           ▼
+                 PostgreSQL Database
+                  (9 Normalized Tables)
+                           │
+                  SQLAlchemy Connection
+                           │
+                           ▼
+                   FastAPI REST APIs
+                  /api/v1/...
+                           │
+              ┌────────────┴────────────┐
+              ▼                         ▼
+        Redis Cache              Business Logic
+              │                         │
+              └────────────┬────────────┘
+                           ▼
+                Chart.js Dashboard
+```
+
+---
+
+# Technology Stack
 
 | Category | Technologies |
 |----------|--------------|
 | Backend | FastAPI, Python |
 | Database | PostgreSQL |
-| ORM | SQLAlchemy |
+| ORM / DB Access | SQLAlchemy |
 | Caching | Redis |
 | Data Processing | Pandas |
-| Containerization | Docker, Docker Compose |
 | Frontend | HTML, CSS, JavaScript, Chart.js |
+| Containerization | Docker, Docker Compose |
 
-## Architecture
+---
 
-           Kaggle Olist Dataset
-                   │
-                   ▼
-          Python ETL (Pandas)
-                   │
-                   ▼
-        PostgreSQL Database
-                   │
-          SQLAlchemy Queries
-                   │
-                   ▼
-             FastAPI Backend
-                   │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-   Redis Cache         REST API Endpoints
-        │                     │
-        └──────────┬──────────┘
-                   ▼
-         Chart.js Dashboard
+# Database Schema
 
-## Database Design
-
-The platform stores data in a normalized PostgreSQL schema comprising:
+The project uses a normalized relational schema consisting of:
 
 - Customers
 - Orders
@@ -227,46 +119,117 @@ The platform stores data in a normalized PostgreSQL schema comprising:
 - Geolocation
 - Product Category Translation
 
-The schema uses primary keys, foreign keys, and indexes to optimize analytical workloads.
+Primary keys, foreign keys, and indexes are used to maintain referential integrity and optimize analytical queries.
 
+---
 
-## Performance Benchmarks
+# Key Design Decisions
 
-| Benchmark | Result |
-|-----------|--------|
-| Average API Response (Redis Cache) | **13.2 ms** |
-| Average API Response (No Cache) | **210.1 ms** |
-| API Latency Reduction | **93.7%** |
+### Why `customer_unique_id` instead of `customer_id`?
 
-## Installation
+The Olist dataset generates a new `customer_id` for every purchase. Cohort retention and RFM segmentation therefore use `customer_unique_id` to correctly identify repeat customers. Using `customer_id` would incorrectly classify every purchase as coming from a new customer.
+
+---
+
+### Why Raw SQL?
+
+This project focuses on analytical SQL rather than CRUD operations. Complex window functions, CTEs, ranking, cohort analysis, and RFM segmentation are more naturally expressed in SQL than through an ORM. SQLAlchemy is used for connection pooling and parameterized query execution.
+
+---
+
+### Why Redis?
+
+Several endpoints perform full-table aggregations and window-function computations. Redis caches these expensive results, avoiding repeated execution and reducing average response latency by approximately **94%**.
+
+---
+
+# API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| GET `/api/v1/revenue/trends` | Monthly revenue trends |
+| GET `/api/v1/cohort/retention` | Customer cohort retention |
+| GET `/api/v1/customers/rfm-segments` | Customer RFM segmentation |
+| GET `/api/v1/sellers/top-by-region` | Top sellers by state |
+| GET `/api/v1/products/top-categories-by-region` | Best-selling categories |
+| GET `/api/v1/delivery/delay-vs-review` | Delivery delay vs customer review analysis |
+| GET `/health` | Health check |
+
+---
+
+# Installation
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/thediyagupta/E-Commerce-Sales-Analytics-Platform.git
 
-cd ecommerce-analytics
+cd E-Commerce-Sales-Analytics-Platform
 
 docker compose up -d
 
+pip install -r requirements.txt
+
+# Download the Olist dataset from Kaggle and place the CSV files in /data
+
 python load_data.py
+
+cp .env.example .env
 
 uvicorn app.main:app --reload
 ```
 
+API Documentation
 
-## API Endpoints
+```
+http://localhost:8000/docs
+```
 
-| Endpoint | Description |
-|----------|-------------|
-| /api/v1/revenue/trends | Monthly revenue analysis |
-| /api/v1/customers/rfm-segments | Customer RFM segmentation |
-| /api/v1/cohort | Cohort retention analysis |
-| /api/v1/sellers | Top sellers by region |
-| /api/v1/delivery | Delivery delay vs review score |
+---
 
-## Future Improvements
+# Repository Structure
 
-- JWT Authentication
-- CI/CD Pipeline
+```
+├── app/
+│   ├── routers/
+│   ├── cache.py
+│   ├── config.py
+│   ├── database.py
+│   └── main.py
+│
+├── assets/
+├── frontend/
+├── sql/
+├── data/
+│
+├── docker-compose.yml
+├── schema.sql
+├── load_data.py
+├── requirements.txt
+└── README.md
+```
+
+---
+
+# Future Improvements
+
+- Deploy the platform on Render with managed PostgreSQL and Redis
+- Materialized views for frequently accessed analytical queries
+- JWT-based authentication
+- CI/CD pipeline using GitHub Actions
 - Kubernetes deployment
-- Scheduled ETL jobs
-- Cloud deployment (AWS/GCP/Azure)
+- Interactive filtering and dashboard enhancements
+
+---
+
+# Dataset
+
+This project uses the **Olist Brazilian E-Commerce Public Dataset**.
+
+https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+
+---
+
+## Author
+
+**Diya Gupta**
+
+GitHub: https://github.com/thediyagupta
