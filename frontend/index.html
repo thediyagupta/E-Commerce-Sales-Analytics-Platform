@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Olist Analytics Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .card { background: #1e293b; border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px 0; color: #cbd5e1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #334155; }
+  .cache-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .hit { background: #166534; }
+  .miss { background: #7c2d12; }
+  #status { font-size: 12px; color: #f87171; }
+</style>
+</head>
+<body>
+  <h1>Olist E-Commerce Analytics</h1>
+  <div class="subtitle">Reads live from the FastAPI backend at <code>API_BASE</code> below</div>
+  <div id="status"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Monthly Revenue Trend <span id="revenue-cache" class="cache-badge"></span></h2>
+      <canvas id="revenueChart" height="180"></canvas>
+    </div>
+    <div class="card">
+      <h2>Delivery Delay vs Avg Review Score <span id="delay-cache" class="cache-badge"></span></h2>
+      <canvas id="delayChart" height="180"></canvas>
+    </div>
+    <div class="card">
+      <h2>RFM Segments (page 1) <span id="rfm-cache" class="cache-badge"></span></h2>
+      <table id="rfmTable"><thead><tr><th>Customer</th><th>Recency</th><th>Freq</th><th>Monetary</th><th>Segment</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Top Sellers by Region <span id="sellers-cache" class="cache-badge"></span></h2>
+      <table id="sellersTable"><thead><tr><th>State</th><th>Seller</th><th>Revenue</th><th>Rank</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+<script>
+const API_BASE = "http://localhost:8000"; // change if deployed elsewhere
+
+function cacheBadge(elId, hit) {
+  const el = document.getElementById(elId);
+  el.textContent = hit ? "cache hit" : "cache miss";
+  el.className = "cache-badge " + (hit ? "hit" : "miss");
+}
+
+async function fetchJSON(path) {
+  const res = await fetch(API_BASE + path);
+  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
+  return res.json();
+}
+
+async function loadRevenue() {
+  const json = await fetchJSON("/api/v1/revenue/trends");
+  cacheBadge("revenue-cache", json._cache_hit);
+  const rows = json.data;
+  new Chart(document.getElementById("revenueChart"), {
+    type: "line",
+    data: {
+      labels: rows.map(r => r.month),
+      datasets: [{
+        label: "Total Revenue (R$)",
+        data: rows.map(r => r.total_revenue),
+        borderColor: "#38bdf8",
+        tension: 0.25,
+      }]
+    },
+    options: { plugins: { legend: { labels: { color: "#e2e8f0" } } },
+      scales: { x: { ticks: { color: "#94a3b8" } }, y: { ticks: { color: "#94a3b8" } } } }
+  });
+}
+
+async function loadDelay() {
+  const json = await fetchJSON("/api/v1/delivery/delay-vs-review");
+  cacheBadge("delay-cache", json._cache_hit);
+  const rows = json.buckets;
+  new Chart(document.getElementById("delayChart"), {
+    type: "bar",
+    data: {
+      labels: rows.map(r => r.delay_bucket),
+      datasets: [{
+        label: "Avg Review Score",
+        data: rows.map(r => r.avg_review_score),
+        backgroundColor: "#f97316",
+      }]
+    },
+    options: { plugins: { legend: { labels: { color: "#e2e8f0" } } },
+      scales: { x: { ticks: { color: "#94a3b8" } }, y: { ticks: { color: "#94a3b8" }, min: 0, max: 5 } } }
+  });
+}
+
+async function loadRFM() {
+  const json = await fetchJSON("/api/v1/customers/rfm-segments?page=1&page_size=10");
+  const tbody = document.querySelector("#rfmTable tbody");
+  json.data.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.customer_unique_id.slice(0,8)}...</td><td>${r.recency_days}</td><td>${r.frequency}</td><td>R$${r.monetary}</td><td>${r.segment}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function loadSellers() {
+  const json = await fetchJSON("/api/v1/sellers/top-by-region?top_n=3");
+  cacheBadge("sellers-cache", json._cache_hit);
+  const tbody = document.querySelector("#sellersTable tbody");
+  json.data.slice(0, 15).forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.seller_state}</td><td>${r.seller_id.slice(0,8)}...</td><td>R$${r.total_revenue}</td><td>${r.state_rank}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+Promise.all([loadRevenue(), loadDelay(), loadRFM(), loadSellers()])
+  .catch(err => { document.getElementById("status").textContent = "Error: " + err.message + " (is the API running at " + API_BASE + "?)"; });
+</script>
+</body>
+</html>
